@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from daemon import Daemon
 import time
 import struct
 import socket
@@ -11,11 +12,16 @@ import logging
 from threading import Thread
 import signal
 import json
-from win32com.client import Dispatch
-from collections import OrderedDict
-import urllib2
-import pythoncom
-import os
+
+
+# Simple WebSocket server implementation. Handshakes with the client then echos back everything
+# that is received. Has no dependencies (doesn't require Twisted etc) and works with the RFC6455
+# version of WebSockets. Tested with FireFox 16, though should work with the latest versions of
+# IE, Chrome etc.
+#
+# rich20b@gmail.com
+# Adapted from https://gist.github.com/512987 with various functions stolen from other sites, see
+# below for full details.
 
 # Constants
 MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -61,101 +67,43 @@ class WebSocket(object):
         # We have handshaken
         else:
             logging.debug("Handshake is complete")
-            response = ""
+
             # Decode the data that we received according to section 5 of RFC6455
             recv = self.decodeCharArray(data)
-            message = ""
-            try:
-                recv_data = json.loads(''.join(recv).strip(), object_pairs_hook=OrderedDict)
-                if recv_data:
-                    if recv_data['action'] == 'PUSH_F1':
-                        response = self.setIEElementByName(recv_data['content'])
-                    if recv_data['action'] == 'PUSH_DOCUMENT':
-                        path = self.saveTaskDocument(recv_data)
-                        if path:
-                            command = "%d "+path+" %n "+recv_data['doc']['filename']+" {ENTER}"                            
-                            self.selectFile(command)
-                        else:
-                            logging.debug("Can't save file")
-                        self.selectFile()
-            except Exception, e:
-                logging.error(str(e))
-                message = str(e)
-                pass
+            #try:
+            self.setIEElementByName(''.join(recv).strip())
+            #except:
+            #    pass
             # Send our reply
-            self.sendMessage(message)
-        
-    def saveTaskDocument(self, data):
-        request_headers = {
-            "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Encoding":"gzip, deflate, sdch",
-            "Accept-Language":"en-US,en;q=0.8,vi;q=0.6",
-            "Cache-Control":"max-age=0",
-            "Connection":"keep-alive",
-            "Cookie":data['cookie'],
-            "DNT":"1",            
-            "Upgrade-Insecure-Requests":"1",
-            "User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.106 Safari/537.36"
-        }
-        doc = data['doc']        
-        fileurl = doc['fileurl']
-        path = r"C:\HSS\{0}\{1}".format(doc['customer_id'], doc['app_id'])       
-        try:
-            request = urllib2.Request(fileurl, headers=request_headers)
-            f = urllib2.urlopen(request).read()
-            if not os.path.exists(path):
-                os.makedirs(path)
-            with open(r"{0}\{1}".format(path, doc['filename']),"wb") as local_file:
-                local_file.write(f)
-            return path
-        except urllib2.HTTPError, e:
-            logging.error(e.headers)
-            logging.error(e.code + e.msg)            
-            return False        
+            self.sendMessage(''.join(recv).strip())
 
-    # Select file to upload
-    def selectFile(self, command):        
-        shell = Dispatch("Shell.Application")
-        print 12312
-        wscript = Dispatch("WScript.Shell")
-        print 12312312222222222222222
-        # Focus to upload file window on client        
-        wscript.AppActivate("Choose File to Upload")        
-        wscript.SendKeys(command)
-        for win in SHELL.Windows():
-            if win.Name == "Windows Internet Explorer" and win.Document.LocationURL == "http://cfris02.fecredit.com.vn/VPBank/adddoc.jsp":
-                print win.Document.Title
-                upload_script = win.Document.Script._oleobj_.GetIDsOfNames("UploadClick")
-                win.Document.Script._oleobj_.Invoke(upload_script, 0, pythoncom.DISPATCH_METHOD, True)
-                break
-    
-    def setIEElementByName(self, data):                
-        values = data['values']        
-        title = data['title']
+
+    def setIEElementByName(self, message):        
+        from win32com.client import Dispatch
+        from collections import OrderedDict        
+        data = json.loads(message, object_pairs_hook=OrderedDict)        
+        values = data['values']
+        buttons = data['buttons']
+        url = data['url']
         SHELL = Dispatch("Shell.Application")
-        for win in SHELL.Windows():            
+        for win in SHELL.Windows():
+            print win.Name
             if win.Name == "Windows Internet Explorer":                
-                if win.Document.getElementsByTagName("title")[0].innerHTML == title:                    
-                    for fieldName in values:                        
+                if win.Document.getElementsByTagName("title")[0].innerHTML == url:
+                    while win.ReadyState != 4:
+                        time.sleep(1)
+                    for fieldName in values:
+                        print fieldName
                         el = win.Document.getElementsByName(fieldName)
                         if el.length:
-                            #Change field's value
-                            if 'val' in values[fieldName] and values[fieldName]['val']:
-                                el[0].value = values[fieldName]['val']
-                                print values[fieldName]['val']
-                            #Fire event of field
-                            if 'event' in values[fieldName] and values[fieldName]['event']:
-                                el[0].FireEvent(values[fieldName]['event'])
-                                if values[fieldName]['event'] == 'onclick':
-                                    while win.ReadyState != 4:
-                                        time.sleep(0.5)
-                                if values[fieldName]['event'] == 'onchange':
-                                    #Wait for field many2one finish loading
-                                    time.sleep(1)
-                                    popup = SHELL.Windows().Item(SHELL.Windows().Count-1)                                    
-                                    if popup.Document.Title != title:
-                                        while popup in SHELL.Windows():
-                                            time.sleep(0.5)  
+                            el[0].value = values[fieldName]
+                            el[0].FireEvent("onchange")
+                    time.sleep(1.5)
+                    for btn in buttons:
+                        print btn
+                        el = win.Document.getElementsByName(btn)
+                        if el.length:
+                            el[0].FireEvent("onclick")
         return True
 
     # Stolen from http://www.cs.rpi.edu/~goldsd/docs/spring2012-csci4220/websocket-py.txt
@@ -272,8 +220,8 @@ class WebSocket(object):
 
     def send(self, data):
         logging.info("Sent message: %s" % data)
-        self.client.send("\x00%s\xff" % data)    
-    
+        self.client.send("\x00%s\xff" % data)
+
     def close(self):
         self.client.close()
 
@@ -283,8 +231,7 @@ class WebSocketServer(object):
     # Constructor
     def __init__(self, bind, port, cls):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        #self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((bind, port))
         self.bind = bind
         self.port = port
@@ -314,11 +261,7 @@ class WebSocketServer(object):
                 else:
                     logging.debug("Client ready for reading %s" % ready)
                     client = self.connections[ready].client
-                    try:
-                        data = client.recv(1024)
-                    except Exception, e:
-                        logging.error(str(e))
-                        data = ''
+                    data = client.recv(4096)
                     fileno = client.fileno()
                     if data:
                         self.connections[fileno].feed(data)
@@ -337,22 +280,38 @@ class WebSocketServer(object):
                     self.running = False
 
 
+class MyDaemon(Daemon):
+    def run(self):
+        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+        server = WebSocketServer("", 8888, WebSocket)
+        server_thread = Thread(target=server.listen, args=[5])
+        server_thread.start()	
+
+        # Add SIGINT handler for killing the threads
+        def signal_handler(signal, frame):
+            logging.info("Caught Ctrl+C, shutting down...")
+            server.running = False
+            sys.exit()
+
+
+        signal.signal(signal.SIGINT, signal_handler)
+
+        while True:
+            time.sleep(100)
 # Entry point
 if __name__ == "__main__":
-
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-    server = WebSocketServer("", 8888, WebSocket)
-    server_thread = Thread(target=server.listen, args=[5])
-    server_thread.start()	
-
-    # Add SIGINT handler for killing the threads
-    def signal_handler(signal, frame):
-        logging.info("Caught Ctrl+C, shutting down...")
-        server.running = False
-        sys.exit()
-
-
-    signal.signal(signal.SIGINT, signal_handler)
-
-    while True:
-        time.sleep(100)
+    daemon = MyDaemon('daemon-example.pid')
+    if len(sys.argv) == 2:
+        if 'start' == sys.argv[1]:
+            daemon.start()
+        elif 'stop' == sys.argv[1]:
+            daemon.stop()
+        elif 'restart' == sys.argv[1]:
+            daemon.restart()
+        else:
+            print "Unknown command"
+            sys.exit(2)
+        sys.exit(0)
+    else:
+        print "usage: %s start|stop|restart" % sys.argv[0]
+        sys.exit(2)    
