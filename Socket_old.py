@@ -21,7 +21,6 @@ MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TEXT = 0x01
 BINARY = 0x02
 
-logging.basicConfig(filename="C:\\HSS_SOCKET.log",level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # WebSocket implementation
 class WebSocket(object):
@@ -104,6 +103,8 @@ class WebSocket(object):
             return False
         # Check Documet desc
         desc = win.Document.getElementsByTagName("td")[6].childnodes[0] .innerHTML
+        logging.debug(desc)
+        logging.debug(doc['desc'])
         if desc.replace("&nbsp; ","") != doc['desc']:
             self.message = "Sai loại chứng từ !"
             return False
@@ -155,14 +156,13 @@ class WebSocket(object):
         time.sleep(1)        
         if browser['IE']:
             pythoncom.CoInitialize()
-            wscript = Dispatch("WScript.Shell")           
-            while not wscript.AppActivate("Choose File to Upload"):        
+            wscript = Dispatch("WScript.Shell")            
+            while not wscript.AppActivate("Choose File to Upload"):                
                 time.sleep(1)                    
             wscript.SendKeys(command, 1)
             
             time.sleep(1)
             wscript.SendKeys("%n", 1)
-            logging.info("Choosing file %s" % filename)
             wscript.SendKeys(filename, 1)
             wscript.SendKeys("{ENTER}", 1)
             #time.sleep(1)        
@@ -271,7 +271,6 @@ class WebSocket(object):
             indexFirstMask = 4
         elif datalength == 127:
             indexFirstMask = 10
-
         # Extract masks
         masks = [m for m in byteArray[indexFirstMask: indexFirstMask + 4]]
         indexFirstDataByte = indexFirstMask + 4
@@ -343,14 +342,15 @@ class WebSocketServer(object):
         self.listeners = [self.socket]
 
     # Listen for requests
-    def listen(self, backlog=5):        
+    def listen(self, backlog=5):
+
         self.socket.listen(backlog)
         logging.info("Listening on %s" % self.port)
 
         # Keep serving requests
         self.running = True
         while self.running:
-    
+
             # Find clients that need servicing
             rList, wList, xList = select(self.listeners, [], self.listeners, 1)
             for ready in rList:
@@ -384,51 +384,23 @@ class WebSocketServer(object):
                     for fileno, conn in self.connections:
                         conn.close()
                     self.running = False
-                    
-import win32serviceutil
-import win32service
-import win32event
-import servicemanager
 
 
-class HSS_SocketService (win32serviceutil.ServiceFramework):
-    _svc_name_ = "HSS_SERVICE"
-    _svc_display_name_ = "HSS Socket Service"
-    
-    def __init__(self,args):
-        win32serviceutil.ServiceFramework.__init__(self,args)
-        self.stop_event = win32event.CreateEvent(None,0,0,None)
-        self.stop_requested = False
+# Entry point
+if __name__ == "__main__":    
+    logging.basicConfig(filemode='w', level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+    server = WebSocketServer("", 8888, WebSocket)
+    server_thread = Thread(target=server.listen, args=[5])
+    server_thread.start()	
 
-    def SvcStop(self):
-        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        win32event.SetEvent(self.stop_event)
-        logging.info('Stopping service ...')
-        self.stop_requested = True
+    # Add SIGINT handler for killing the threads
+    def signal_handler(signal, frame):
+        logging.info("Caught Ctrl+C, shutting down...")
+        server.running = False
+        sys.exit()
 
-    def SvcDoRun(self):
-        #servicemanager.LogMsg(
-        #    servicemanager.EVENTLOG_INFORMATION_TYPE,
-        #    servicemanager.PYS_SERVICE_STARTED,
-        #    (self._svc_name_,'')
-        #)
-        self.main()
 
-    def main(self):                
-        server = WebSocketServer("", 8888, WebSocket)        
-        server_thread = Thread(target=server.listen, args=[5])
-        server_thread.start()	
-        
-        while True:
-            time.sleep(3)            
-            if self.stop_requested:
-                break         
-        return
+    signal.signal(signal.SIGINT, signal_handler)
 
-if __name__ == '__main__':    
-    if len(sys.argv) == 1:
-        servicemanager.Initialize()
-        servicemanager.PrepareToHostSingle(HSS_SocketService)
-        servicemanager.StartServiceCtrlDispatcher()
-    else:        
-        win32serviceutil.HandleCommandLine(HSS_SocketService)
+    while True:
+        time.sleep(100)
